@@ -1,0 +1,251 @@
+#include <iostream>
+#include <vector>
+#include <cmath>
+#include <chrono>
+#include <iomanip>
+
+std::vector<std::vector<double>> createMatrix(int N) {
+    std::vector<std::vector<double>> A(N, std::vector<double>(N, 0));
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            if (i == j) {
+                A[i][j] = 100;
+            }
+            else {
+                A[i][j] = 1 + 0.6 * i - 0.1 * j;
+            }
+        }
+    }
+    return A;
+}
+
+std::vector<double> createRightHandSide(const std::vector<std::vector<double>>& A) {
+    int N = A.size();
+    std::vector<double> f(N, 0.0);
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            f[i] += A[i][j] * 1;
+        }
+    }
+    return f;
+}
+
+
+void LU(const std::vector<std::vector<double>>& A,
+    std::vector<std::vector<double>>& L,
+    std::vector<std::vector<double>>& U) {
+    int N = A.size();
+    L = std::vector<std::vector<double>>(N, std::vector<double>(N, 0.0));
+    U = std::vector<std::vector<double>>(N, std::vector<double>(N, 0.0));
+
+    for (int i = 0; i < N; i++) {
+
+        for (int j = i; j < N; j++) {
+            double sum = 0.0;
+            for (int k = 0; k < i; k++) {
+                sum += L[i][k] * U[k][j];
+            }
+            U[i][j] = A[i][j] - sum;
+        }
+        for (int j = i; j < N; j++) {
+            if (i == j) {
+                L[i][i] = 1.0;
+            }
+            else {
+                double sum = 0.0;
+                for (int k = 0; k < i; k++) {
+                    sum += L[j][k] * U[k][i];
+                }
+                L[j][i] = (A[j][i] - sum) / U[i][i];
+            }
+        }
+    }
+}
+
+std::vector<double> solveLU(const std::vector<std::vector<double>>& L,
+    const std::vector<std::vector<double>>& U,
+    const std::vector<double>& f) {
+    int N = f.size();
+    std::vector<double> y(N, 0.0);
+    std::vector<double> x(N, 0.0);
+
+    for (int i = 0; i < N; i++) {
+        double sum = 0.0;
+        for (int j = 0; j < i; j++) {
+            sum += L[i][j] * y[j];
+        }
+        y[i] = (f[i] - sum) / L[i][i];
+    }
+
+    for (int i = N - 1; i >= 0; i--) {
+        double sum = 0.0;
+        for (int j = i + 1; j < N; j++) {
+            sum += U[i][j] * x[j];
+        }
+        x[i] = (y[i] - sum) / U[i][i];
+    }
+
+    return x;
+}
+void QR(const std::vector<std::vector<double>>& A,
+    std::vector<std::vector<double>>& Q,
+    std::vector<std::vector<double>>& R) {
+    int N = A.size();
+    R = A;
+    Q = std::vector<std::vector<double>>(N, std::vector<double>(N, 0.0));
+    for (int i = 0; i < N; i++) {
+        Q[i][i] = 1.0;
+    }
+
+    for (int k = 0; k < N - 1; k++) {
+        double norm = 0.0;
+        for (int i = k; i < N; i++) {
+            norm += R[i][k] * R[i][k];
+        }
+        norm = sqrt(norm);
+
+        double alpha = -copysign(norm, R[k][k]);
+
+        double rkk = R[k][k];
+        R[k][k] -= alpha;
+        double norm_v = 0.0;
+        for (int i = k; i < N; i++) {
+            norm_v += R[i][k] * R[i][k];
+        }
+        norm_v = sqrt(norm_v);
+
+        if (norm_v < 1e-12) continue;
+
+        for (int i = k; i < N; i++) {
+            R[i][k] /= norm_v;
+        }
+
+        for (int j = k + 1; j < N; j++) {
+            double dot = 0.0;
+            for (int i = k; i < N; i++) {
+                dot += R[i][k] * R[i][j];
+            }
+            for (int i = k; i < N; i++) {
+                R[i][j] -= 2 * R[i][k] * dot;
+            }
+        }
+
+        for (int j = 0; j < N; j++) {
+            double dot = 0.0;
+            for (int i = k; i < N; i++) {
+                dot += Q[j][i] * R[i][k];
+            }
+            for (int i = k; i < N; i++) {
+                Q[j][i] -= 2 * R[i][k] * dot;
+            }
+        }
+
+        R[k][k] = alpha;
+        for (int i = k + 1; i < N; i++) {
+            R[i][k] = 0.0;
+        }
+    }
+
+    for (int i = 0; i < N; i++) {
+        for (int j = i + 1; j < N; j++) {
+            std::swap(Q[i][j], Q[j][i]);
+        }
+    }
+}
+
+std::vector<double> solveQR(const std::vector<std::vector<double>>& Q,
+    const std::vector<std::vector<double>>& R,
+    const std::vector<double>& f) {
+    int N = f.size();
+    std::vector<double> y(N, 0.0);
+    std::vector<double> x(N, 0.0);
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            y[i] += Q[i][j] * f[j];
+        }
+    }
+    for (int i = N - 1; i >= 0; i--) {
+        x[i] = y[i];
+        for (int j = i + 1; j < N; j++) {
+            x[i] -= R[i][j] * x[j];
+        }
+        x[i] /= R[i][i];
+    }
+
+    return x;
+}
+
+double euclideanNorm(const std::vector<double>& v) {
+    double norm = 0.0;
+    for (double x : v) {
+        norm += x * x;
+    }
+    return sqrt(norm);
+}
+
+double computeRelativeError(const std::vector<double>& x, const std::vector<double>& x_exact) {
+    int N = x.size();
+    std::vector<double> diff(N);
+    for (int i = 0; i < N; i++) {
+        diff[i] = x[i] - x_exact[i];
+    }
+    return euclideanNorm(diff) / euclideanNorm(x_exact);
+}
+
+void printMatrix(const std::vector<std::vector<double>>& matrix, const std::string& name) {
+    std::cout << "Матрица " << name << ":" << std::endl;
+    for (const auto& row : matrix) {
+        for (double val : row) {
+            std::cout << std::setw(10) << std::setprecision(4) << val << " ";
+        }
+        std::cout << std::endl;
+    }
+    std::cout << std::endl;
+}
+int main() {
+    setlocale(LC_ALL, "ru");
+    std::vector<int> sizes = { 250, 500, 1000, 1500 };
+
+    for (int N : sizes) {
+        auto A = createMatrix(N);
+        auto f = createRightHandSide(A);
+        std::vector<double> x_exact(N, 1); 
+
+        if (N == 3) {
+            std::cout << "Исходная матрица A:" << std::endl;
+            for (const auto& row : A) {
+                for (double val : row) {
+                    std::cout << std::setw(8) << std::setprecision(4) << val << " ";
+                }
+                std::cout << std::endl;
+            }
+            std::cout << std::endl;
+        }
+
+        std::vector<std::vector<double>> L, U;
+        LU(A, L, U);
+        auto start = std::chrono::high_resolution_clock::now();
+        auto x_lu = solveLU(L, U, f);
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed_lu = end - start;
+        double rel_error_lu = computeRelativeError(x_lu, x_exact);
+
+        std::vector<std::vector<double>> Q, R;
+        QR(A, Q, R);
+        start = std::chrono::high_resolution_clock::now();
+        auto x_qr = solveQR(Q, R, f);
+        end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed_qr = end - start;
+        double rel_error_qr = computeRelativeError(x_qr, x_exact);
+
+        std::cout << "N = " << N << ":" << std::endl;
+        std::cout << "LU метод:" << std::endl;
+        std::cout << "  Время: " << elapsed_lu.count() << " секунд" << std::endl;
+        std::cout << "  Погрешность: " << rel_error_lu << std::endl;
+
+        std::cout << "QR метод:" << std::endl;
+        std::cout << "  Время: " << elapsed_qr.count() << " секунд" << std::endl;
+        std::cout << "  Погрешность: " << rel_error_qr << std::endl;
+        std::cout << std::endl;
+    }
+}
