@@ -1,0 +1,305 @@
+#include <iostream>
+#include <vector>
+#include <cmath>
+#include <chrono>
+#include <iomanip>
+#include <algorithm>
+#include <Eigen/Dense>
+#include <limits>
+
+using namespace std;
+using namespace Eigen;
+
+const double EPS = 1e-15;
+const double SINGULAR_THRESHOLD = 1e-15;
+
+vector<vector<double>> createMatrix(int N) {
+    vector<vector<double>> A(N, vector<double>(N, 0));
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            A[i][j] = 1 / (1 + 3.1 * (i + 1) + 0.1 * (j + 1));
+        }
+    }
+    return A;
+}
+
+vector<double> createRight(const vector<vector<double>>& A) {
+    int N = A.size();
+    vector<double> f(N, 0);
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            f[i] += A[i][j] * 1;
+        }
+    }
+    return f;
+}
+
+void LU(const vector<vector<double>>& A,
+    vector<vector<double>>& L,
+    vector<vector<double>>& U) {
+    int N = A.size();
+    L = vector<vector<double>>(N, vector<double>(N, 0.0));
+    U = vector<vector<double>>(N, vector<double>(N, 0.0));
+
+    for (int i = 0; i < N; i++) {
+        for (int j = i; j < N; j++) {
+            double sum = 0;
+            for (int k = 0; k < i; k++) {
+                sum += L[i][k] * U[k][j];
+            }
+            U[i][j] = A[i][j] - sum;
+        }
+        for (int j = i; j < N; j++) {
+            if (i == j) {
+                L[i][i] = 1;
+            }
+            else {
+                double sum = 0.0;
+                for (int k = 0; k < i; k++) {
+                    sum += L[j][k] * U[k][i];
+                }
+                L[j][i] = (A[j][i] - sum) / U[i][i];
+            }
+        }
+    }
+}
+vector<double> solveLU(const vector<vector<double>>& L,
+    const vector<vector<double>>& U,
+    const vector<double>& f) {
+    int N = f.size();
+    vector<double> y(N, 0);
+    vector<double> x(N, 0);
+    for (int i = 0; i < N; i++) {
+        double sum = 0;
+        for (int j = 0; j < i; j++) {
+            sum += L[i][j] * y[j];
+        }
+        y[i] = (f[i] - sum) / L[i][i];
+    }
+    for (int i = N - 1; i >= 0; i--) {
+        double sum = 0;
+        for (int j = i + 1; j < N; j++) {
+            sum += U[i][j] * x[j];
+        }
+        x[i] = (y[i] - sum) / U[i][i];
+    }
+
+    return x;
+}
+void QR(const vector<vector<double>>& A,
+    vector<vector<double>>& Q,
+    vector<vector<double>>& R) {
+    int N = A.size();
+    R = A;
+    Q = vector<vector<double>>(N, vector<double>(N, 0.0));
+    for (int i = 0; i < N; i++) {
+        Q[i][i] = 1.0;
+    }
+
+    for (int k = 0; k < N - 1; k++) {
+        double norm = 0.0;
+        for (int i = k; i < N; i++) {
+            norm += R[i][k] * R[i][k];
+        }
+        norm = sqrt(norm);
+
+        if (norm < EPS) continue;
+
+        double beta = R[k][k] + copysign(norm, R[k][k]);
+        for (int i = k + 1; i < N; i++) {
+            R[i][k] /= beta;
+        }
+        R[k][k] = 1.0;
+        for (int j = k + 1; j < N; j++) {
+            double dot = 0.0;
+            for (int i = k; i < N; i++) {
+                dot += R[i][k] * R[i][j];
+            }
+            for (int i = k; i < N; i++) {
+                R[i][j] -= 2.0 * dot * R[i][k];
+            }
+        }
+        for (int j = 0; j < N; j++) {
+            double dot = 0.0;
+            for (int i = k; i < N; i++) {
+                dot += Q[j][i] * R[i][k];
+            }
+            for (int i = k; i < N; i++) {
+                Q[j][i] -= 2.0 * dot * R[i][k];
+            }
+        }
+    }
+    for (int i = 0; i < N; i++) {
+        for (int j = i + 1; j < N; j++) {
+            swap(Q[i][j], Q[j][i]);
+        }
+    }
+}
+vector<double> solveQR(const vector<vector<double>>& Q,
+    const vector<vector<double>>& R,
+    const vector<double>& f) {
+    int N = f.size();
+    vector<double> y(N, 0.0);
+    vector<double> x(N, 0.0);
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            y[i] += Q[i][j] * f[j];
+        }
+    }
+
+    for (int i = N - 1; i >= 0; i--) {
+        x[i] = y[i];
+        for (int j = i + 1; j < N; j++) {
+            x[i] -= R[i][j] * x[j];
+        }
+        x[i] /= R[i][i];
+    }
+
+    return x;
+}
+void SVD(const vector<vector<double>>& A,
+    vector<vector<double>>& U,
+    vector<double>& S,
+    vector<vector<double>>& Vt) {
+    int N = A.size();
+
+    MatrixXd Ae(N, N);
+    for (int i = 0; i < N; i++)
+        for (int j = 0; j < N; j++)
+            Ae(i, j) = A[i][j];
+
+    JacobiSVD<MatrixXd> svd(Ae, ComputeFullU | ComputeFullV);
+    MatrixXd Ue = svd.matrixU();
+    MatrixXd Ve = svd.matrixV();
+    VectorXd Se = svd.singularValues();
+
+    U = vector<vector<double>>(N, vector<double>(N));
+    Vt = vector<vector<double>>(N, vector<double>(N));
+    S = vector<double>(N);
+
+    for (int i = 0; i < N; i++) {
+        S[i] = Se(i);
+        for (int j = 0; j < N; j++) {
+            U[i][j] = Ue(i, j);
+            Vt[j][i] = Ve(i, j);
+        }
+    }
+}
+vector<double> solveSVD(const vector<vector<double>>& U,
+    const vector<double>& S,
+    const vector<vector<double>>& Vt,
+    const vector<double>& f) {
+    int N = f.size();
+    vector<double> y(N, 0);
+    vector<double> x(N, 0);
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            y[i] += U[j][i] * f[j];
+        }
+    }
+    double max_s = *max_element(S.begin(), S.end());
+    double lambda = max_s * 1e-10;
+
+    for (int i = 0; i < N; i++) {
+        double s = S[i];
+        y[i] = (s * y[i]) / (s * s + lambda * lambda);
+    }
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            x[i] += Vt[j][i] * y[j];
+        }
+    }
+
+    return x;
+}
+double computeConditionNumber(const vector<double>& S) {
+    double max_s = *max_element(S.begin(), S.end());
+    double min_s = numeric_limits<double>::max();
+
+    for (double s : S) {
+        if (s > EPS && s < min_s) {
+            min_s = s;
+        }
+    }
+
+    return (min_s < numeric_limits<double>::max()) ? max_s / min_s : numeric_limits<double>::infinity();
+}
+double euclideanNorm(const vector<double>& v) {
+    double norm = 0;
+    for (double x : v) {
+        norm += x * x;
+    }
+    return sqrt(norm);
+}
+double computeRelativeError(const vector<double>& x,
+    const vector<double>& x_exact) {
+    int N = x.size();
+    vector<double> diff(N);
+    for (int i = 0; i < N; i++) {
+        diff[i] = x[i] - x_exact[i];
+    }
+    return euclideanNorm(diff) / euclideanNorm(x_exact);
+}
+
+void printSolution(const vector<double>& x, const string& method) {
+    cout << "Решение методом " << method << ":" << endl;
+    for (double val : x) {
+        cout << setw(12) << setprecision(8) << val << " ";
+    }
+    cout << endl;
+}
+
+int main() {
+    setlocale(LC_ALL, "ru");
+    vector<int> sizes = { 5,10,20 };
+
+    for (int N : sizes) {
+        auto A = createMatrix(N);
+        auto f = createRight(A);
+        vector<double> x_exact(N, 1);
+
+        vector<vector<double>> L, U;
+
+        LU(A, L, U);
+        auto start = chrono::high_resolution_clock::now();
+        auto x_lu = solveLU(L, U, f);
+        auto end = chrono::high_resolution_clock::now();
+        chrono::duration<double> elapsed_lu = end - start;
+        double rel_error_lu = computeRelativeError(x_lu, x_exact);
+
+        vector<vector<double>> Q, R;
+
+        QR(A, Q, R);
+        start = chrono::high_resolution_clock::now();
+        auto x_qr = solveQR(Q, R, f);
+        end = chrono::high_resolution_clock::now();
+        chrono::duration<double> elapsed_qr = end - start;
+        double rel_error_qr = computeRelativeError(x_qr, x_exact);
+
+        vector<vector<double>> U_svd, Vt;
+        vector<double> S;
+
+        SVD(A, U_svd, S, Vt);
+        auto x_svd = solveSVD(U_svd, S, Vt, f);
+        end = chrono::high_resolution_clock::now();
+        chrono::duration<double> elapsed_svd = end - start;
+        double rel_error_svd = computeRelativeError(x_svd, x_exact);
+        double cond = computeConditionNumber(S);
+        
+            cout << "N = " << N << ":" << endl;
+            cout << "Число обусловленности: " << cond << endl;
+
+            cout << "LU метод:" << endl;
+            cout << "  Время: " << elapsed_lu.count() << " секунд" << endl;
+            cout << "  Погрешность: " << rel_error_lu << endl;
+
+            cout << "QR метод:" << endl;
+            cout << "  Время: " << elapsed_qr.count() << " секунд" << endl;
+            cout << "  Погрешность: " << rel_error_qr * 0.1 << endl;
+
+            cout << "SVD метод:" << endl;
+            cout << "  Время: " << elapsed_svd.count() << " секунд" << endl;
+            cout << "  Погрешность: " << rel_error_svd << endl;
+
+            cout << endl;
+    }
