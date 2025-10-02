@@ -1,0 +1,44 @@
+#include <iostream>
+#include <vector>
+using namespace std;
+
+pair<vector<double>, vector<double>> setka(double a, double b, double h, double r) {
+	vector<double> rset, aset;
+	double xi = a;
+	while (xi <= b) {
+		rset.push_back(xi);
+		xi += h;
+	}
+	xi = a;
+	while (xi <= b) {
+		aset.push_back(xi);
+		xi += h;
+		h = h * r;
+	}
+	return { rset, aset };
+}
+int main(){
+	setlocale(LC_ALL, "");
+	double a, b, h, r;
+	cout << "Введите a: ";
+	cin >> a;
+	cout << "Введите b: ";
+	cin >> b;
+	cout << "Введите шаг(h): ";
+	cin >> h;
+	cout << "Введите коэффициент разрядки(r): ";
+	cin >> r;
+	auto res = setka(a,b,h,r);
+	vector<double>& rset = res.first;
+	vector<double>& aset = res.second;
+	cout << "Равномерная сетка: ";
+	for (double point : rset) {
+		cout << point << " ";
+	}
+	cout << endl;
+	cout << "Адаптивная сетка: ";
+	for (double point : aset) {
+		cout << point << " ";
+	}
+	cout << endl;
+}
