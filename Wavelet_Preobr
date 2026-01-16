@@ -1,0 +1,810 @@
+#include <iostream>
+#include <vector>
+#include <cmath>
+#include <complex>
+#include <fstream>
+#include <algorithm>
+#include <iomanip>
+#include <memory>
+#include <stdexcept>
+#include <locale>
+using namespace std;
+
+const double PI = 3.14159265358979323846;
+const double SQRT2 = sqrt(2.0);
+
+
+void bitReversePermute(vector<complex<double>>& x) {
+    int n = x.size();
+    for (int i = 1, j = 0; i < n; i++) {
+        int bit = n >> 1;
+        for (; j & bit; bit >>= 1)
+            j ^= bit;
+        j ^= bit;
+
+        if (i < j)
+            swap(x[i], x[j]);
+    }
+}
+
+vector<complex<double>> FFT(vector<complex<double>> x, bool inverse = false) {
+    int N = x.size();
+    if ((N & (N - 1)) != 0) {
+        cerr << "Длина должна быть степенью двойки: " << N << endl;
+        return {};
+    }
+    bitReversePermute(x);
+    for (int len = 2; len <= N; len <<= 1) {
+        double angle = (inverse ? 2.0 : -2.0) * PI / len;
+        complex<double> wlen(cos(angle), sin(angle));
+
+        for (int i = 0; i < N; i += len) {
+            complex<double> w(1);
+            for (int j = 0; j < len / 2; ++j) {
+                complex<double> u = x[i + j];
+                complex<double> v = w * x[i + j + len / 2];
+                x[i + j] = u + v;
+                x[i + j + len / 2] = u - v;
+                w *= wlen;
+            }
+        }
+    }
+    if (inverse) {
+        for (int i = 0; i < N; i++) {
+            x[i] /= N;
+        }
+    }
+    return x;
+}
+
+vector<complex<double>> FFT_real(const vector<double>& real_vec) {
+    vector<complex<double>> complex_vec(real_vec.size());
+    for (size_t i = 0; i < real_vec.size(); i++) {
+        complex_vec[i] = complex<double>(real_vec[i], 0.0);
+    }
+    return FFT(complex_vec, false);
+}
+
+vector<double> IFFT_real(const vector<complex<double>>& X) {
+    vector<complex<double>> complex_result = FFT(X, true);
+    vector<double> real_result(complex_result.size());
+    for (size_t i = 0; i < complex_result.size(); i++) {
+        real_result[i] = complex_result[i].real();
+    }
+    return real_result;
+}
+class SignalZ {
+private:
+    int N;
+    vector<double> signal;
+
+public:
+    SignalZ(int n) : N(n) {
+        signal.resize(N, 0.0);
+        generateSignal();
+    }
+    void generateSignal() {
+        for (int j = 0; j < N; j++) {
+            if (j >= N / 4 && j <= N / 2) {
+                signal[j] = 2.18 + 0.21 * cos(2.0 * PI * 182.0 * j / 2048.0);
+            }
+            else if (j > 3 * N / 4 && j < N) {
+                signal[j] = 2.18 + 0.21 * cos(2.0 * PI * 182.0 * j / 2048.0);
+            }
+            else {
+                signal[j] = 0.0;
+            }
+        }
+    }
+    const vector<double>& getSignal() const { return signal; }
+    int getSize() const { return N; }
+
+    double operator[](int j) const {
+        j = ((j % N) + N) % N;
+        return signal[j];
+    }
+
+    void saveToFile(const string& filename) const {
+        ofstream file(filename);
+        file << fixed << setprecision(6);
+        for (int j = 0; j < N; j++) {
+            file << j << " " << signal[j] << endl;
+        }
+        file.close();
+    }
+};
+
+class WaveletSystem {
+protected:
+    int N;
+    int p;
+
+    vector<double> u1;
+    vector<double> v1;
+
+    string name;
+
+    double safeGet(const vector<double>& vec, int index) const {
+        if (index < 0) index += N;
+        if (index >= N) index %= N;
+        return vec[index];
+    }
+    vector<double> downsampling(const vector<double>& z, int l) const {
+        int step = 1 << l;
+        int newSize = N / step;
+        if (newSize <= 0) newSize = 1;
+
+        vector<double> result(newSize);
+
+        for (int n = 0; n < newSize; n++) {
+            int idx = n * step;
+            if (idx < z.size()) {
+                result[n] = z[idx];
+            }
+            else {
+                result[n] = 0.0;
+            }
+        }
+
+        return result;
+    }
+    vector<double> upsampling(const vector<double>& z, int l) const {
+        int step = 1 << l;
+        vector<double> result(N, 0.0);
+
+        for (int n = 0; n < N; n++) {
+            if (n % step == 0) {
+                int idx = n / step;
+                if (idx < z.size()) {
+                    result[n] = z[idx];
+                }
+            }
+        }
+
+        return result;
+    }
+    vector<double> convolution(const vector<double>& a, const vector<double>& b) const {
+        vector<double> result(N, 0.0);
+
+        for (int n = 0; n < N; n++) {
+            for (size_t k = 0; k < b.size(); k++) {
+                int idx = (n - (int)k + N) % N;
+                if (idx < 0) idx += N;
+                if (idx >= N) idx %= N;
+                result[n] += a[idx] * b[k];
+            }
+        }
+
+        return result;
+    }
+    vector<double> conjugateReverse(const vector<double>& w) const {
+        vector<double> result(N, 0.0);
+        for (int n = 0; n < N; n++) {
+            int idx = (N - n) % N;
+            result[n] = w[idx];
+        }
+        return result;
+    }
+
+public:
+    WaveletSystem(int n, const string& systemName) : N(n), name(systemName) {
+        p = 0;
+        int temp = N;
+        while (temp > 1) {
+            temp >>= 1;
+            p++;
+        }
+        if (p == 0) p = 1;
+    }
+
+    virtual ~WaveletSystem() = default;
+
+    string getName() const { return name; }
+
+    virtual vector<double> getUl(int l) const {
+        if (l < 1) l = 1;
+
+        vector<double> ul(N, 0.0);
+        int K = 1 << (l - 1);
+        int step = N / (1 << (l - 1));
+        if (step == 0) step = 1;
+
+        for (int n = 0; n < N; n++) {
+            for (int k = 0; k < K; k++) {
+                int idx = n + k * step;
+                idx %= N;
+                if (idx < 0) idx += N;
+                if (idx >= N) idx %= N;
+
+                if (idx < u1.size()) {
+                    ul[n] += u1[idx];
+                }
+            }
+        }
+
+        return ul;
+    }
+
+    virtual vector<double> getVl(int l) const {
+        if (l < 1) l = 1;
+        vector<double> vl(N, 0.0);
+        int K = 1 << (l - 1);
+        int step = N / (1 << (l - 1));
+        if (step == 0) step = 1;
+
+        for (int n = 0; n < N; n++) {
+            for (int k = 0; k < K; k++) {
+                int idx = n + k * step;
+                idx %= N;
+                if (idx < 0) idx += N;
+                if (idx >= N) idx %= N;
+
+                if (idx < v1.size()) {
+                    vl[n] += v1[idx];
+                }
+            }
+        }
+
+        return vl;
+    }
+
+    virtual vector<double> getFl(int l) const {
+        if (l <= 0) {
+            return vector<double>(N, 0.0);
+        }
+
+        if (l == 1) {
+            return getVl(1);
+        }
+
+        vector<double> gl_1 = getGl(l - 1);
+        vector<double> vl = getVl(l);
+        vector<double> upsampledVl = upsampling(vl, l - 1);
+
+        return convolution(gl_1, upsampledVl);
+    }
+
+    virtual vector<double> getGl(int l) const {
+        if (l <= 0) {
+            vector<double> g0(N, 0.0);
+            g0[0] = 1.0;
+            return g0;
+        }
+
+        if (l == 1) {
+            return getUl(1);
+        }
+
+        vector<double> gl_1 = getGl(l - 1);
+        vector<double> ul = getUl(l);
+        vector<double> upsampledUl = upsampling(ul, l - 1);
+
+        return convolution(gl_1, upsampledUl);
+    }
+
+    vector<double> computeWaveletCoeffs(const vector<double>& z, int j) const {
+        if (j < 1 || j > p) {
+            j = min(max(j, 1), p);
+        }
+
+        int step = 1 << j;
+        int numCoeffs = N / step;
+        if (numCoeffs <= 0) numCoeffs = 1;
+
+        vector<double> coeffs(numCoeffs, 0.0);
+
+        vector<double> fj = getFl(j);
+        vector<double> fj_conj = conjugateReverse(fj);
+        vector<double> convResult = convolution(z, fj_conj);
+
+        for (int k = 0; k < numCoeffs; k++) {
+            int idx = k * step;
+            if (idx < convResult.size()) {
+                coeffs[k] = convResult[idx];
+            }
+        }
+        return coeffs;
+    }
+
+    vector<double> computeScalingCoeffs(const vector<double>& z, int j) const {
+        if (j < 1 || j > p) {
+            j = min(max(j, 1), p);
+        }
+
+        int step = 1 << j;
+        int numCoeffs = N / step;
+        if (numCoeffs <= 0) numCoeffs = 1;
+
+        vector<double> coeffs(numCoeffs, 0.0);
+
+        vector<double> gj = getGl(j);
+        vector<double> gj_conj = conjugateReverse(gj);
+        vector<double> convResult = convolution(z, gj_conj);
+
+        for (int k = 0; k < numCoeffs; k++) {
+            int idx = k * step;
+            if (idx < convResult.size()) {
+                coeffs[k] = convResult[idx];
+            }
+        }
+        return coeffs;
+    }
+
+    vector<double> reconstructSignal(const vector<vector<double>>& waveletCoeffs,
+        const vector<vector<double>>& scalingCoeffs) const {
+
+        if (waveletCoeffs.empty() || scalingCoeffs.empty()) {
+            return vector<double>(N, 0.0);
+        }
+
+        int maxLevel = waveletCoeffs.size();
+        vector<double> approx = scalingCoeffs[maxLevel - 1];
+
+        for (int j = maxLevel - 1; j >= 0; j--){
+   
+            int level = j + 1;
+
+            vector<double> ul = getUl(level);
+            vector<double> vl = getVl(level);
+
+            normalizeVector(ul);
+            normalizeVector(vl);
+
+            vector<double> approx_up = upsampling(approx, 1);
+            vector<double> detail_up = upsampling(waveletCoeffs[j], 1);
+
+            vector<double> conv_approx = convolution(approx_up, ul);
+            vector<double> conv_detail = convolution(detail_up, vl);
+
+            approx.resize(N, 0.0);
+            for (int i = 0; i < N; i++) {
+                approx[i] = (conv_approx[i] + conv_detail[i]) / SQRT2;
+            }
+        }
+
+        return approx;
+    }
+
+    void fullAnalysis(const vector<double>& z,
+        vector<vector<double>>& waveletCoeffs,
+        vector<vector<double>>& scalingCoeffs,
+        int maxLevel = 4) const {
+        waveletCoeffs.clear();
+        scalingCoeffs.clear();
+
+        maxLevel = min(maxLevel, p);
+
+        for (int j = 1; j <= maxLevel; j++) {
+            waveletCoeffs.push_back(computeWaveletCoeffs(z, j));
+            scalingCoeffs.push_back(computeScalingCoeffs(z, j));
+        }
+    }
+
+    vector<double> filterSignal(const vector<double>& z) const {
+        vector<vector<double>> waveletCoeffs;
+        vector<vector<double>> scalingCoeffs;
+        fullAnalysis(z, waveletCoeffs, scalingCoeffs, 4);
+
+        if (waveletCoeffs.size() >= 2) {
+            fill(waveletCoeffs[1].begin(), waveletCoeffs[1].end(), 0.0);
+        }
+
+        return reconstructSignal(waveletCoeffs, scalingCoeffs);
+    }
+
+    void saveCoeffsToFile(const vector<double>& z, const string& prefix) const {
+        ofstream file;
+
+        for (int j = 1; j <= 4 && j <= p; j++) {
+            try {
+                vector<double> psi_coeffs = computeWaveletCoeffs(z, j);
+                string filename = prefix + "_psi_level" + to_string(j) + ".txt";
+                file.open(filename);
+                for (size_t k = 0; k < psi_coeffs.size(); k++) {
+                    file << k << " " << psi_coeffs[k] << endl;
+                }
+                file.close();
+            }
+            catch (const exception& e) {
+                cout << "Ошибка при вычислении коэффициентов ψ уровня " << j
+                    << ": " << e.what() << endl;
+            }
+
+            if (j == 4) {
+                try {
+                    vector<double> phi_coeffs = computeScalingCoeffs(z, j);
+                    string filename = prefix + "_phi_level4.txt";
+                    file.open(filename);
+                    for (size_t k = 0; k < phi_coeffs.size(); k++) {
+                        file << k << " " << phi_coeffs[k] << endl;
+                    }
+                    file.close();
+                }
+                catch (const exception& e) {
+                    cout << "Ошибка при вычислении коэффициентов φ уровня 4: "
+                        << e.what() << endl;
+                }
+            }
+        }
+    }
+
+    void saveReconstructedSignals(const vector<double>& z, const string& prefix) const {
+        vector<vector<double>> waveletCoeffs;
+        vector<vector<double>> scalingCoeffs;
+
+        fullAnalysis(z, waveletCoeffs, scalingCoeffs, 4);
+
+        for (int level = 1; level <= 4 && level <= waveletCoeffs.size(); level++) {
+            try {
+                vector<vector<double>> waveletSubset(waveletCoeffs.begin(),
+                    waveletCoeffs.begin() + level);
+                vector<vector<double>> scalingSubset(scalingCoeffs.begin(),
+                    scalingCoeffs.begin() + level);
+
+                vector<double> reconstructed = reconstructSignal(waveletSubset, scalingSubset);
+
+                string filename = prefix + "_P_minus" + to_string(level) + ".txt";
+                ofstream file(filename);
+                for (int i = 0; i < N && i < reconstructed.size(); i++) {
+                    file << i << " " << reconstructed[i] << endl;
+                }
+                file.close();
+            }
+            catch (const exception& e) {
+                cout << "Ошибка при восстановлении сигнала уровня " << level
+                    << ": " << e.what() << endl;
+            }
+        }
+    }
+
+protected:
+    void normalizeVector(vector<double>& vec) const {
+        double norm = 0.0;
+        for (double val : vec) {
+            norm += val * val;
+        }
+        norm = sqrt(norm);
+        if (norm > 1e-10) {
+            for (double& val : vec) {
+                val /= norm;
+            }
+        }
+    }
+};
+
+class HaarSystem : public WaveletSystem {
+public:
+    HaarSystem(int n) : WaveletSystem(n, "Haar") {
+        u1.resize(N, 0.0);
+        v1.resize(N, 0.0);
+
+        if (N >= 2) {
+            u1[0] = 1.0 / SQRT2;
+            u1[1] = 1.0 / SQRT2;
+        }
+
+        if (N >= 2) {
+            v1[0] = 1.0 / SQRT2;
+            v1[1] = -1.0 / SQRT2;
+        }
+    }
+};
+class ShannonSystem : public WaveletSystem {
+public:
+    ShannonSystem(int n) : WaveletSystem(n, "Shannon") {
+        u1.resize(N, 0.0);
+        v1.resize(N, 0.0);
+
+        initializeFilters();
+    }
+    vector<double> getUl(int l) const override {
+        if (l < 1) l = 1;
+
+        vector<double> u_hat = computeUHat(l);
+        vector<double> ul = frequencyToTime(u_hat, l);
+        normalizeVector(ul);
+
+        return ul;
+    }
+    vector<double> getVl(int l) const override {
+        if (l < 1) l = 1;
+
+        vector<double> v_hat = computeVHat(l);
+        vector<double> vl = frequencyToTime(v_hat, l);
+        normalizeVector(vl);
+
+        return vl;
+    }
+    vector<double> getFl(int l) const override {
+        if (l <= 0) return vector<double>(N, 0.0);
+
+        if (l == 1) {
+            vector<double> v1_vec = getVl(1);
+            normalizeVector(v1_vec);
+            return v1_vec;
+        }
+        vector<double> gl_1 = getGl(l - 1);
+        vector<double> vl = getVl(l);
+        vector<double> upsampledVl = upsampling(vl, l - 1);
+
+        vector<double> result = convolution(gl_1, upsampledVl);
+        normalizeVector(result);
+        return result;
+    }
+    vector<double> getGl(int l) const override {
+        if (l <= 0) {
+            vector<double> g0(N, 0.0);
+            g0[0] = 1.0;
+            return g0;
+        }
+        if (l == 1) {
+            vector<double> u1_vec = getUl(1);
+            normalizeVector(u1_vec);
+            return u1_vec;
+        }
+        vector<double> gl_1 = getGl(l - 1);
+        vector<double> ul = getUl(l);
+        vector<double> upsampledUl = upsampling(ul, l - 1);
+
+        vector<double> result = convolution(gl_1, upsampledUl);
+        normalizeVector(result);
+        return result;
+    }
+
+
+private:
+    void initializeFilters() {
+        vector<double> u1_hat = computeUHat(1);
+        vector<double> v1_hat = computeVHat(1);
+
+        u1 = frequencyToTime(u1_hat, 1);
+        v1 = frequencyToTime(v1_hat, 1);
+
+        normalizeVector(u1);
+        normalizeVector(v1);
+
+    }
+    vector<double> computeUHat(int l) const {
+        int M = N / (1 << (l - 1));
+        if (M <= 0) M = 1;
+
+        vector<double> u_hat(M, 0.0);
+
+        int boundary1 = M / 4 - 1;
+        int boundary2 = 3 * M / 4 - 1;
+
+        boundary1 = max(0, min(boundary1, M - 1));
+        boundary2 = max(0, min(boundary2, M - 1));
+
+        for (int n = 0; n <= boundary1; n++) {
+            u_hat[n] = SQRT2;
+        }
+
+        int start_region3 = 3 * M / 4;
+        if (start_region3 < M) {
+            for (int n = start_region3; n < M; n++) {
+                u_hat[n] = SQRT2;
+            }
+        }
+
+        return u_hat;
+    }
+
+    vector<double> computeVHat(int l) const {
+        int M = N / (1 << (l - 1));
+        if (M <= 0) M = 1;
+
+        vector<double> v_hat(M, 0.0);
+
+        int start = M / 4;
+        int end = 3 * M / 4 - 1;
+
+        start = max(0, min(start, M - 1));
+        end = max(0, min(end, M - 1));
+
+        for (int n = start; n <= end; n++) {
+            v_hat[n] = SQRT2;
+        }
+
+        return v_hat;
+    }
+    vector<double> frequencyToTime(const vector<double>& freq_filter, int l) const {
+        int M = freq_filter.size();
+        vector<double> full_freq(N, 0.0);
+
+        int step = 1 << (l - 1);
+
+        for (int m = 0; m < M; m++) {
+            int idx = m * step;
+            if (idx < N) {
+                full_freq[idx] = freq_filter[m];
+            }
+        }
+        vector<complex<double>> complex_freq(N);
+        for (int i = 0; i < N; i++) {
+            complex_freq[i] = complex<double>(full_freq[i], 0.0);
+        }
+
+        vector<double> time_filter = IFFT_real(complex_freq);
+
+        double scale = sqrt((double)N);
+        for (double& val : time_filter) {
+            val *= scale;
+        }
+
+        return time_filter;
+    }
+};
+
+class Daubechies6System : public WaveletSystem {
+public:
+    Daubechies6System(int n) : WaveletSystem(n, "Daubechies6") {
+        u1.resize(N, 0.0);
+        v1.resize(N, 0.0);
+
+        double a = 1.0 - sqrt(10.0);
+        double b = 1.0 + sqrt(10.0);
+        double c = sqrt(5.0 + 2.0 * sqrt(10.0));
+        double factor = SQRT2 / 32.0;
+
+        if (N >= 6) {
+            u1[0] = factor * (b + c);
+            u1[1] = factor * (2.0 * a + 3.0 * b + 3.0 * c);
+            u1[2] = factor * (6.0 * a + 4.0 * b + 2.0 * c);
+            u1[3] = factor * (6.0 * a + 4.0 * b - 2.0 * c);
+            u1[4] = factor * (2.0 * a + 3.0 * b - 3.0 * c);
+            u1[5] = factor * (b - c);
+        }
+
+        if (N >= 6) {
+            v1[0] = -u1[1];
+            v1[1] = u1[0];
+            if (N >= 6) {
+                v1[N - 6] = -u1[5];
+                v1[N - 5] = u1[4];
+                v1[N - 4] = -u1[3];
+                v1[N - 3] = u1[2];
+            }
+        }
+
+        normalizeVectors();
+    }
+
+private:
+    void normalizeVectors() {
+        double normU = 0.0, normV = 0.0;
+        for (int i = 0; i < N; i++) {
+            normU += u1[i] * u1[i];
+            normV += v1[i] * v1[i];
+        }
+
+        normU = sqrt(normU);
+        normV = sqrt(normV);
+
+        if (normU > 0) {
+            for (int i = 0; i < N; i++) {
+                u1[i] /= normU;
+            }
+        }
+
+        if (normV > 0) {
+            for (int i = 0; i < N; i++) {
+                v1[i] /= normV;
+            }
+        }
+    }
+};
+
+int main() {
+    setlocale(LC_ALL, "");
+    try {
+        int n = 11;
+        int N = 1 << n;
+
+        cout << "n = " << n << ", N = 2^" << n << " = " << N << endl;
+        cout << endl;
+
+        SignalZ signal(N);
+        vector<double> z = signal.getSignal();
+        signal.saveToFile("original_signal.txt");
+
+        vector<unique_ptr<WaveletSystem>> systems;
+
+        try {
+            systems.push_back(make_unique<HaarSystem>(N));
+        }
+        catch (const exception& e) {
+            cout << "Ошибка создания системы Хаара: " << e.what() << endl;
+        }
+
+        try {
+            systems.push_back(make_unique<ShannonSystem>(N));
+
+        }
+        catch (const exception& e) {
+            cout << "Ошибка создания системы Шеннона: " << e.what() << endl;
+        }
+
+        try {
+            systems.push_back(make_unique<Daubechies6System>(N));
+        }
+        catch (const exception& e) {
+            cout << "Ошибка создания системы Добеши D6: " << e.what() << endl;
+        }
+
+        if (systems.empty()) {
+            cout << "Не удалось создать ни одну систему вейвлетов" << endl;
+            return 1;
+        }
+
+        for (auto& system : systems) {
+
+            string prefix = system->getName();
+            system->saveCoeffsToFile(z, prefix);
+
+            system->saveReconstructedSignals(z, prefix);
+
+            try {
+                vector<double> filtered = system->filterSignal(z);
+
+                ofstream file(prefix + "_filtered_P_minus1.txt");
+                for (int i = 0; i < N; i++) {
+                    file << i << " " << filtered[i] << endl;
+                }
+                file.close();
+            }
+            catch (const exception& e) {
+                cout << "  Ошибка при фильтрации: " << e.what() << endl;
+            }
+        }
+
+        vector<double> piecewiseSignal(N);
+        for (int i = 0; i < N; i++) {
+            if (i < N / 3) piecewiseSignal[i] = 1.0;
+            else if (i < 2 * N / 3) piecewiseSignal[i] = 2.0;
+            else piecewiseSignal[i] = 1.0;
+        }
+
+        ofstream file_piecewise("piecewise_signal.txt");
+        for (int i = 0; i < N; i++) {
+            file_piecewise << i << " " << piecewiseSignal[i] << endl;
+        }
+        file_piecewise.close();
+
+        vector<double> errors;
+        vector<string> systemNames;
+
+        for (auto& system : systems) {
+            try {
+                vector<double> filteredPiecewise = system->filterSignal(piecewiseSignal);
+
+                double error = 0.0;
+                for (int i = 0; i < N; i++) {
+                    error += fabs(piecewiseSignal[i] - filteredPiecewise[i]);
+                }
+                error /= N;
+                errors.push_back(error);
+                systemNames.push_back(system->getName());
+
+                cout << "Ошибка фильтрации для системы " << system->getName() << ": " << error << endl;
+
+                cout << "Среднее значение исходного сигнала: ";
+                double avg_original = 0.0;
+                for (int i = 0; i < N; i++) avg_original += piecewiseSignal[i];
+                avg_original /= N;
+                cout << avg_original << endl;
+
+            }
+            catch (const exception& e) {
+                cout << "Ошибка фильтрации для системы " << system->getName() << ": " << e.what() << endl;
+                errors.push_back(1e10);
+                systemNames.push_back(system->getName());
+
+            }
+        }
+    }
+    catch (const exception& e) {
+        cout << "Критическая ошибка: " << e.what() << endl;
+        return 1;
+    }
+}
