@@ -1,0 +1,373 @@
+#include <iostream>
+#include <vector>
+#include <cmath>
+#include <iomanip>
+#include <functional>
+#include <fstream>
+#include <sstream>
+#include <string>
+
+using namespace std;
+
+struct LotkaVolterra {
+    double alpha, beta, gamma, delta;
+
+    vector<double> operator()(double t, const vector<double>& u) const {
+        vector<double> f(2);
+        f[0] = alpha * u[0] - beta * u[0] * u[1]; 
+        f[1] = delta * u[0] * u[1] - gamma * u[1];
+        return f;
+    }
+};
+
+class ERK4 {
+public:
+    vector<vector<double>> solve(
+        function<vector<double>(double, vector<double>)> f,
+        const vector<double>& u0,
+        double t0,
+        double tf,
+        int steps) {
+
+        int n = u0.size();
+        vector<vector<double>> result(steps + 1, vector<double>(n + 1));
+        vector<double> u = u0;
+        double h = (tf - t0) / steps;
+        double t = t0;
+
+        result[0][0] = t;
+        for (int j = 0; j < n; j++) result[0][j + 1] = u[j];
+
+        for (int i = 0; i < steps; i++) {
+            vector<double> k1 = f(t, u);
+
+            vector<double> u2 = u;
+            for (int j = 0; j < n; j++) u2[j] += h / 2 * k1[j];
+            vector<double> k2 = f(t + h / 2, u2);
+
+            vector<double> u3 = u;
+            for (int j = 0; j < n; j++) u3[j] += h / 2 * k2[j];
+            vector<double> k3 = f(t + h / 2, u3);
+
+            vector<double> u4 = u;
+            for (int j = 0; j < n; j++) u4[j] += h * k3[j];
+            vector<double> k4 = f(t + h, u4);
+
+            for (int j = 0; j < n; j++) {
+                u[j] += h / 6 * (k1[j] + 2 * k2[j] + 2 * k3[j] + k4[j]);
+            }
+            t += h;
+
+            result[i + 1][0] = t;
+            for (int j = 0; j < n; j++) result[i + 1][j + 1] = u[j];
+        }
+        return result;
+    }
+};
+
+class Impltrapezez {
+    double tol = 1e-10;
+    int max_iter = 100;
+
+public:
+    vector<double> newton_solve(
+        function<vector<double>(double, const vector<double>&)> f,
+        const vector<double>& u_old,
+        double t, double h) {
+
+        int n = u_old.size();
+        vector<double> u_new = u_old;
+
+        for (int iter = 0; iter < max_iter; iter++) {
+            vector<double> f_old = f(t, u_old);
+            vector<double> f_new = f(t + h, u_new);
+
+            vector<double> F(n);
+            for (int j = 0; j < n; j++) {
+                F[j] = u_new[j] - u_old[j] - h / 2 * (f_old[j] + f_new[j]);
+            }
+            double norm = 0;
+            for (int j = 0; j < n; j++) norm += F[j] * F[j];
+            norm = sqrt(norm);
+
+            if (norm < tol) break;
+
+            vector<double> u_next(n);
+            for (int j = 0; j < n; j++) {
+                u_next[j] = u_old[j] + h / 2 * (f_old[j] + f_new[j]);
+            }
+
+            for (int j = 0; j < n; j++) {
+                u_new[j] = 0.5 * (u_new[j] + u_next[j]);
+            }
+        }
+
+        return u_new;
+    }
+
+    vector<vector<double>> solve(
+        function<vector<double>(double, const vector<double>&)> f,
+        const vector<double>& u0,
+        double t0,
+        double tf,
+        int steps) {
+
+        int n = u0.size();
+        vector<vector<double>> result(steps + 1, vector<double>(n + 1));
+        vector<double> u = u0;
+        double h = (tf - t0) / steps;
+        double t = t0;
+
+        result[0][0] = t;
+        for (int j = 0; j < n; j++) result[0][j + 1] = u[j];
+
+        for (int i = 0; i < steps; i++) {
+            u = newton_solve(f, u, t, h);
+            t += h;
+
+            result[i + 1][0] = t;
+            for (int j = 0; j < n; j++) result[i + 1][j + 1] = u[j];
+        }
+
+        return result;
+    }
+};
+
+vector<vector<double>> resample_to_daily(
+    const vector<vector<double>>& results,
+    double t0, double tf, int days = 366) {  
+
+    vector<vector<double>> resampled(days, vector<double>(3));
+
+    size_t idx = 0;
+    for (int day = 0; day < days; day++) {
+        double target_time = t0 + day;  
+
+        while (idx + 1 < results.size() && results[idx + 1][0] < target_time) {
+            idx++;
+        }
+        if (idx + 1 >= results.size()) {
+            resampled[day][0] = day;  
+            resampled[day][1] = results.back()[1];
+            resampled[day][2] = results.back()[2];
+        }
+        else if (results[idx][0] <= target_time && target_time <= results[idx + 1][0]) {
+            double t1 = results[idx][0];
+            double t2 = results[idx + 1][0];
+            double alpha = (target_time - t1) / (t2 - t1);
+
+            resampled[day][0] = day;  
+            resampled[day][1] = results[idx][1] + alpha * (results[idx + 1][1] - results[idx][1]);
+            resampled[day][2] = results[idx][2] + alpha * (results[idx + 1][2] - results[idx][2]);
+        }
+        else {
+            resampled[day][0] = day;
+            resampled[day][1] = results[0][1];
+            resampled[day][2] = results[0][2];
+        }
+    }
+
+    return resampled;
+}
+
+void save_rk4_results(const vector<vector<double>>& res_rk4, const string& base_name) {
+    ofstream outfile_time(base_name + "_time.txt");
+    outfile_time << fixed << setprecision(6);
+
+    for (size_t i = 0; i < res_rk4.size(); i++) {
+        outfile_time << res_rk4[i][0] << "\t" << res_rk4[i][1] << "\t" << res_rk4[i][2] << "\n";
+    }
+    outfile_time.close();
+
+    ofstream outfile_prey(base_name + "_prey_vs_time.txt");
+    outfile_prey << fixed << setprecision(6);
+
+    for (size_t i = 0; i < res_rk4.size(); i++) {
+        outfile_prey << res_rk4[i][0] << "\t" << res_rk4[i][1] << "\n";
+    }
+    outfile_prey.close();
+
+    ofstream outfile_predator(base_name + "_predator_vs_time.txt");
+    outfile_predator << fixed << setprecision(6);
+
+    for (size_t i = 0; i < res_rk4.size(); i++) {
+        outfile_predator << res_rk4[i][0] << "\t" << res_rk4[i][2] << "\n";
+    }
+    outfile_predator.close();
+
+}
+
+void save_trapez_results(const vector<vector<double>>& res_trapez, const string& base_name) {
+    ofstream outfile_time(base_name + "_time.txt");
+    outfile_time << fixed << setprecision(6);
+
+    for (size_t i = 0; i < res_trapez.size(); i++) {
+        outfile_time << res_trapez[i][0] << "\t" << res_trapez[i][1] << "\t" << res_trapez[i][2] << "\n";
+    }
+    outfile_time.close();
+
+    ofstream outfile_prey(base_name + "_prey_vs_time.txt");
+    outfile_prey << fixed << setprecision(6);
+
+    for (size_t i = 0; i < res_trapez.size(); i++) {
+        outfile_prey << res_trapez[i][0] << "\t" << res_trapez[i][1] << "\n";
+    }
+    outfile_prey.close();
+
+    ofstream outfile_predator(base_name + "_predator_vs_time.txt");
+    outfile_predator << fixed << setprecision(6);
+
+    for (size_t i = 0; i < res_trapez.size(); i++) {
+        outfile_predator << res_trapez[i][0] << "\t" << res_trapez[i][2] << "\n";
+    }
+    outfile_predator.close();
+
+}
+
+void save_daily_results(const vector<vector<double>>& results,
+    const string& base_name,
+    double t0, double tf) {
+
+    auto daily_results = resample_to_daily(results, t0, tf, 366);
+
+    ofstream outfile_time(base_name + "_daily.txt");
+    outfile_time << fixed << setprecision(6);
+
+    for (size_t i = 0; i < daily_results.size(); i++) {
+        outfile_time << static_cast<int>(daily_results[i][0]) << "\t"  
+            << daily_results[i][1] << "\t"
+            << daily_results[i][2] << "\n";
+    }
+    outfile_time.close();
+
+    ofstream outfile_prey(base_name + "_daily_prey.txt");
+    outfile_prey << fixed << setprecision(6);
+
+    for (size_t i = 0; i < daily_results.size(); i++) {
+        outfile_prey << static_cast<int>(daily_results[i][0]) << "\t"
+            << daily_results[i][1] << "\n";
+    }
+    outfile_prey.close();
+
+    ofstream outfile_predator(base_name + "_daily_predator.txt");
+    outfile_predator << fixed << setprecision(6);
+
+    for (size_t i = 0; i < daily_results.size(); i++) {
+        outfile_predator << static_cast<int>(daily_results[i][0]) << "\t"
+            << daily_results[i][2] << "\n";
+    }
+    outfile_predator.close();
+
+}
+
+void save_phase_portraits(const vector<vector<double>>& res_rk4,
+    const vector<vector<double>>& res_trapez,
+    double t0, double tf,
+    const string& base_name) {
+
+    auto daily_rk4 = resample_to_daily(res_rk4, t0, tf, 366);
+    auto daily_trapez = resample_to_daily(res_trapez, t0, tf, 366);
+
+    ofstream outfile_rk4(base_name + "_rk4_daily_phase.txt");
+    outfile_rk4 << fixed << setprecision(6);
+
+    for (size_t i = 0; i < daily_rk4.size(); i++) {
+        outfile_rk4 << daily_rk4[i][1] << "\t" << daily_rk4[i][2] << "\n";
+    }
+    outfile_rk4.close();
+
+    ofstream outfile_trapez(base_name + "_trapez_daily_phase.txt");
+    outfile_trapez << fixed << setprecision(6);
+
+    for (size_t i = 0; i < daily_trapez.size(); i++) {
+        outfile_trapez << daily_trapez[i][1] << "\t" << daily_trapez[i][2] << "\n";
+    }
+    outfile_trapez.close();
+
+    ofstream outfile_rk4_all("rk4_all_points_phase.txt");
+    outfile_rk4_all << fixed << setprecision(6);
+
+    for (size_t i = 0; i < res_rk4.size(); i++) {
+        outfile_rk4_all << res_rk4[i][1] << "\t" << res_rk4[i][2] << "\n";
+    }
+    outfile_rk4_all.close();
+
+    ofstream outfile_trapez_all("trapez_all_points_phase.txt");
+
+    outfile_trapez_all << fixed << setprecision(6);
+
+    for (size_t i = 0; i < res_trapez.size(); i++) {
+        outfile_trapez_all << res_trapez[i][1] << "\t" << res_trapez[i][2] << "\n";
+    }
+    outfile_trapez_all.close();
+}
+
+LotkaVolterra input_parameters() {
+    LotkaVolterra model;
+
+    cout << "Введите параметры модели Лотки-Вольтерры:\n";
+    cout << "alpha (коэффициент рождаемости жертв, >0): ";
+    cin >> model.alpha;
+
+    cout << "beta (коэффициент успешной охоты на жертв, >0): ";
+    cin >> model.beta;
+
+    cout << "gamma (коэффициент естественной убыли хищников, >0): ";
+    cin >> model.gamma;
+
+    cout << "delta (коэффициент воспроизводства хищников, >0): ";
+    cin >> model.delta;
+
+    return model;
+}
+
+vector<double> input_initial_conditions() {
+    vector<double> u0(2);
+
+    cout << "\nВведите условия:\n";
+    cout << "Начальная численность жертв (x0, >0): ";
+    cin >> u0[0];
+
+    cout << "Начальная численность хищников (y0, >0): ";
+    cin >> u0[1];
+
+    return u0;
+}
+
+void input_simulation_parameters(double& t0, double& tf, int& steps) {
+
+    cout << "Начальное время (t0): ";
+    cin >> t0;
+    cout << "Конечное время (tf, >t0): ";
+    cin >> tf;
+    cout << "Количество шагов: ";
+    cin >> steps;
+}
+
+int main() {
+    setlocale(LC_ALL, "");
+    LotkaVolterra model = input_parameters();
+    vector<double> u0 = input_initial_conditions();
+
+    double t0, tf;
+    int steps;
+    input_simulation_parameters(t0, tf, steps);
+
+    auto f = [&model](double t, const vector<double>& u) {
+        return model(t, u);
+        };
+
+    ERK4 erk4;
+    Impltrapezez trapez;
+
+    auto res_rk4 = erk4.solve(f, u0, t0, tf, steps);
+    auto res_trapez = trapez.solve(f, u0, t0, tf, steps);
+
+    save_rk4_results(res_rk4, "rk4");
+    save_trapez_results(res_trapez, "trapez");
+
+    save_daily_results(res_rk4, "rk4_daily", t0, tf);
+    save_daily_results(res_trapez, "trapez_daily", t0, tf);
+
+    save_phase_portraits(res_rk4, res_trapez, t0, tf, "phase_portrait");
+}
